@@ -275,7 +275,7 @@ function ebasis_writer(natm,centl,basis,fileout)
     write(fout,line)
     for iatm=1:natm
         icent  = centl[iatm][2]
-        buff   = "---------------$(icent[2])--------------- \n"
+        buff   = "--------------- $(icent[2]) --------------- \n"
         write(fout,buff)
         icoord = icent[3]
         if false

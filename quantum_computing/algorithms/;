@@ -1,0 +1,475 @@
+import numpy as np
+import scipy as sp
+import matplotlib.pyplot as plt
+import numpy.random as npr
+import gc
+from   datetime import datetime
+
+#USE THIS FOR FUNCTION SEPARATORS
+##=====================================================================================##
+
+#USE FOR SECTION SEPARATORS
+#----
+
+# This python file will solve the 1d Hubbard model using the VHA algorithm from: https://journals.aps.org/pra/abstract/10.1103/PhysRevA.105.062415
+# I will extend the model used in the mentioned paper to the Majorana basis
+##=====================================================================================##
+def debug_exit(mesg):
+##=====================================================================================##
+    print("*** DEBUG EXIT ***")
+    print(mesg)
+    exit()
+
+    return None
+
+##=====================================================================================##
+def vec_to_str(v):
+##=====================================================================================##
+    str_v = str(v[0])
+
+    for i in range(2,len(v)):
+        str_v = str_v + " " + str(v[i])
+
+    return str_v
+
+##=====================================================================================##
+def freemem(v):
+##=====================================================================================##
+    v = None
+    gc.collect()
+    return v
+
+
+##=====================================================================================##
+def infile_reader(infile):
+##=====================================================================================##
+    xvec = []
+    yvec = []
+    with open(infile,"r") as f:
+        for line in f:
+            cols = line.split(line)
+            xvec.append(float(cols[0]))
+            yvec.append(float(cols[1]))
+    return xvec,yvec
+
+##=====================================================================================##
+def pretty_print(M):
+##=====================================================================================##
+    nrow,ncol = M.shape
+    for row in range(nrow):
+        row_str = np.zeros(ncol)
+        for col in range(ncol):
+            x            = M[row,col]
+            row_str[col] = str(x)
+            row_out      = "\t".join(row_str)
+        print(row_out)
+    return None
+
+##=====================================================================================##
+def print_state(state,norb):
+##=====================================================================================##
+    binary_state = format(state,f'0{norb}b')
+    print("#----")
+    print(f"Integer state: {state}")
+    print(f"Binary state: {binary_state}")
+    print("#----")
+
+    orbital = 0
+    while orbital < norb:
+        occupation = occ(state,orbital)
+        print(f"Orbital: {orbital}  Occupation: {occupation}")
+        orbital += 1
+
+    print("#----")
+    return None
+
+##=====================================================================================##
+def print_wavefunction(psi,norb,tol=1.0e-8):
+##=====================================================================================##
+    print("#----")
+    print("Wavefunction components:")
+    print("#----")
+    state = 0
+    while state < len(psi):
+        amp  = psi[state]
+        prob = np.abs(amp)**2
+        if abs(amp) > tol:
+            binary_state = format(state,f'0{norb}b')
+            print(f"Basis state: | {binary_state}")
+            print(f"Amplitude: {amp:.4f}")
+            print(f"Probability: {prob:.4f}")
+            print("#----")
+            orbital = 0
+            while orbital < norb:
+                occupation = occ(state,orbital)
+                print(f"Orbital: {orbital}  Occupation: {occupation}")
+                orbital += 1
+        state += 1
+
+    print("#----")
+    return None
+
+##=====================================================================================##
+def check_normalization(state):
+##=====================================================================================##
+    print("#----")
+    norm = np.sum(np.abs(state)**2)
+    print(f"Normalization: {norm:.6f}")
+    print("#----")
+
+    return None
+
+##=====================================================================================##
+def x_gate():
+##=====================================================================================##
+    return np.array([[0, 1], [1, 0]],dtype=complex)
+
+##=====================================================================================##
+def y_gate():
+##=====================================================================================##
+    return np.array([[0, -1j], [1j, 0]],dtype=complex)
+
+##=====================================================================================##
+def z_gate():
+##=====================================================================================##
+    return np.array([[1, 0], [0, -1]],dtype=complex)
+
+##=====================================================================================##
+def cnot_gate():
+##=====================================================================================##
+    return np.array([[1, 0, 0, 0],
+                     [0, 1, 0, 0],
+                     [0, 0, 0, 1],
+                     [0, 0, 1, 0]],dtype=complex)
+
+##=====================================================================================##
+def rotation_y(theta):
+##=====================================================================================##
+    return np.array(
+        [[np.cos(theta/2), -np.sin(theta/2)],
+         [np.sin(theta/2), np.cos(theta/2)]],dtype=complex
+    )
+
+##=====================================================================================##
+def apply_single_qubit_gate(nqubit, qubit, gate):
+##=====================================================================================##
+    assert qubit < nqubit, "Qubit index out of range"
+    op = 1
+    I  = np.eye(2,dtype=complex)
+    for i in range(nqubit):
+        if i == qubit:
+            op = np.kron(op,gate)
+        else:
+            op = np.kron(op,I)
+    return op
+
+##=====================================================================================##
+def apply_two_qubit_gate(nqubit, qubit1, qubit2, gate):
+##=====================================================================================##
+    assert qubit1 < nqubit, "Qubit1 index out of range"
+    assert qubit2 < nqubit, "Qubit2 index out of range"
+    assert qubit1 != qubit2, "Qubit1 and Qubit2 must be different"
+    
+    # Apply two qubit gates on adjacent sites for Hubbard model hopping
+    # Remove this condition for general Hamiltonians
+    if qubit2 not in [qubit1-1, qubit1+1]:
+        raise ValueError("Qubit1 and Qubit2 must be adjacent")
+    
+    op = 1
+    q  = 0
+    I  = np.eye(2,dtype=complex)
+    while q < nqubit:
+        if q == qubit1:
+            op = np.kron(op,gate)
+            q  += 2
+        else:
+            op = np.kron(op,I)
+            q += 1
+    return op
+
+##=====================================================================================##
+def occ(state,orbital):
+##=====================================================================================##
+    # Shift the bitstring so that the indicated state is on the far left
+    # Then read out 0 or 1
+    shift_state = state >> orbital
+    orb_occ     = shift_state & 1
+    return orb_occ
+
+##=====================================================================================##
+def count_left_occ(state,orb):
+##=====================================================================================##
+    # Count the number of occupied states to the left of the indicated state in the bitstring
+    count    = 0
+    for left_orb in range(orb):
+        occup = occ(state,left_orb)
+        
+        if occup == 1:
+            count += 1
+        
+    return count
+
+##=====================================================================================##
+def parity_sign(state,orbital):
+##=====================================================================================##
+    nleft  = count_left_occ(state,orbital)
+    parity = 0
+
+    if nleft % 2 == 0:
+        parity = 1
+
+    else:
+        parity = -1
+
+    return parity
+
+##=====================================================================================##
+def create(state,orbital):
+##=====================================================================================##
+    new_state = None
+    sign      = 0
+    # Can't create if already occupied
+    if occ(state,orbital) == 1:
+        new_state = None
+        sign      = 0
+        return new_state, sign
+
+    sign      = parity_sign(state,orbital)
+    new_state = state | (1 << orbital)
+
+    return new_state, sign
+
+##=====================================================================================##
+def annihilate(state,orbital):
+##=====================================================================================##
+    new_state = None
+    sign      = 0
+    # Can't annihilate if already empty
+    if occ(state,orbital) == 0:
+        new_state = None
+        sign      = 0
+        return new_state, sign
+
+    sign      = parity_sign(state,orbital)
+    mask      = ~(1 << orbital)
+    new_state = state & mask
+
+    return new_state, sign
+
+##=====================================================================================##
+def creation(j,nqubit):
+##=====================================================================================##
+    a_dag = 1
+    I     = np.eye(2,dtype=complex)
+    for i in range(nqubit):
+        # Note matrix a is an argument of np.kron - creating strings of Pauli Z's + a single combination of x and y gates
+        if i < j:
+            a_dag = np.kron(a_dag,z_gate())
+        elif i == j:
+            a_dag = np.kron(a_dag,((0.5)*(x_gate() - (1j * y_gate()))))
+        else:
+            a_dag = np.kron(a_dag,I)
+
+    return a_dag
+
+##=====================================================================================##
+def annihilation(j,nqubit):
+##=====================================================================================##
+    a = 1
+    I = np.eye(2,dtype=complex)
+    for i in range(nqubit):
+        # Note matrix a is an argument of np.kron - creating strings of Pauli Z's + a single combination of x and y gates
+        if i < j:
+            a = np.kron(a,z_gate())
+        elif i == j:
+            a = np.kron(a,((0.5)*(x_gate() + (1j * y_gate()))))
+        else:
+            a = np.kron(a,I)
+
+    return a
+
+##=====================================================================================##
+def majorana_plus(j,nqubit):
+##=====================================================================================##
+    c  = creation(j,nqubit)
+    a  = annihilation(j,nqubit)
+    mp = c + a
+    return mp
+
+##=====================================================================================##
+def majorana_minus(j,nqubit):
+##=====================================================================================##
+    c  = creation(j,nqubit)
+    a  = annihilation(j,nqubit)
+    mm = -1j * (c - a)
+    return mm
+
+##=====================================================================================##
+def majorana(k,nqubit):
+##=====================================================================================##
+    orb = k // 2
+    maj_op = None
+    if k%2 == 0:
+        maj_op = majorana_plus(orb,nqubit)
+    else:
+        maj_op = majorana_minus(orb,nqubit)
+
+    return maj_op
+
+##=====================================================================================##
+def number_majorana(orb,nqubit):
+##=====================================================================================##
+    I = np.eye(2**nqubit,dtype=complex)
+    num = 0.5 * (I - 1j * majorana(2*orb,nqubit) @ majorana((2*orb)+1,nqubit))
+    return num
+
+##=====================================================================================##
+def number(j,nqubit):
+##=====================================================================================##
+    num = creation(j,nqubit) @ annihilation(j,nqubit)
+    return num
+
+##=====================================================================================##
+def build_qubit_matrix_majorana(num_orb,num_sites,t,U):
+##=====================================================================================##
+    dimH = 2**num_orb
+    H    = np.zeros((dimH,dimH),dtype=complex)
+
+    #---------------------------
+    # Interaction term
+    #---------------------------
+    for site in range(num_sites):
+
+        up = orb(site,0,num_sites)
+        dn = orb(site,1,num_sites)
+
+        H += U * (
+            number_majorana(up,num_orb)
+            @
+            number_majorana(dn,num_orb)
+        )
+
+    #---------------------------
+    # Hopping term
+    #---------------------------
+    for site in range(num_sites-1):
+
+        for spin in range(2):
+            orb_i = orb(site,spin,num_sites)
+            orb_j = orb(site+1,spin,num_sites)
+            Hop2  = majorana_hopping_matrix(orb_i,orb_j,num_orb,t)
+            H    += Hop2
+    return H
+
+##=====================================================================================##
+def build_interaction_mat(num_orb,num_sites,U):
+##=====================================================================================##
+    dimH    = 2**num_orb
+    int_mat = np.zeros((dimH,dimH),dtype=complex)
+    for site in range(num_sites):
+        up       = orb(site,0,num_sites)
+        dn       = orb(site,1,num_sites)
+        maj_up   = number_majorana(up,num_orb)
+        maj_dn   = number_majorana(dn,num_orb)
+        int_mat += U * (maj_up @ maj_dn)
+    return int_mat
+
+##=====================================================================================##
+def build_hopping_mat(num_orb,num_sites,t):
+##=====================================================================================##
+    dimH    = 2**num_orb
+    hop_mat = np.zeros((dimH,dimH),dtype=complex)
+    for site in range(num_sites-1):
+        for spin in range(2):
+            orb_i    = orb(site,spin,num_sites)
+            orb_j    = orb(site,spin,num_sites)
+            hop_mat += majorana_hopping_matrix(orb_i,orb_j,num_orb,t)
+    return hop_mat
+
+##=====================================================================================##
+def create_unitary(params...):
+##=====================================================================================##
+    num_params = len(params)
+    uni        = np.
+    for iparam in range(num_params):
+
+##=====================================================================================##
+def build_ansatz(params,H1,H2,nqubits):
+##=====================================================================================##
+    dim = 2**nqubits
+    psi = np.zeros(dim,dtype=complex)
+    psi[0] = 1.0
+
+    for qubit in range(nqubits):
+        gate = rotation_y(params[qubit])
+        ent  = cnot_gate()
+        U    = apply_single_qubit_gate(nqubits,qubit,gate)
+        psi  = U @ psi
+
+    for qubit in range(nqubits-1):
+        ent = cnot_gate()
+        #print(f"Qubit1: {qubit}  Qubit2: {qubit+1}")
+        U   = apply_two_qubit_gate(nqubits,qubit,qubit+1,ent)
+        psi = U @ psi
+    return psi
+
+##=====================================================================================##
+def eng_expectation(params,H,nqubits):
+##=====================================================================================##
+    psi_r = np.random.rand(nqubits)
+    H   = build_ansatz(params,nqubits)
+    eng = np.vdot(psi,H @ psi)
+    eng = np.real(eng)
+    return eng
+
+##=====================================================================================##
+def test1A():
+##=====================================================================================##
+    t         = 1.0e0
+    U         = 1.0e0
+
+    num_runs  = 10
+    num_sites = 2
+    nspin     = 2
+    nqubits   = num_sites*nspin
+    dimH      = 2**nqubit
+
+    H         = build_qubit_matrix_majorana(nqubit,num_sites,t,U)
+    res_vec   = []
+    param_vec = []
+    for i in range(num_runs):
+        params = np.ramdom.rand(nqubits)
+        res    = sp.optimize.minimize(
+                eng_expectation,
+                params,
+                args=(H,nqubits),
+                method="COBYLA"
+                )
+        res_vec.append(res.fun)
+        param_vec.append(res.x)
+        print(f"Run {i+1}: Optimal energy: {res.fun:.4f} Optimal parameters: {res.x}")
+    return None
+
+
+
+##=====================================================================================##
+## MAIN CODE ##
+##=====================================================================================##
+if __name__ == "__main__":
+#----
+    print()
+    print(f"Starting main from file: {__file__}")
+    print("---------------------------------------------")
+    print(f"Start time: {datetime.now()}")
+    print("---------------------------------------------")
+#----
+    test1A()    
+#----
+    print()
+    print("---------------------------------------------")
+    print(f"End time: {datetime.now()}")
+    print("---------------------------------------------")
+
+
+
+

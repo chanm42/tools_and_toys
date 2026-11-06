@@ -235,7 +235,7 @@ def ebasis_writer(natm,centL,basis,fileout):
     for iatm in range(natm):
         icent = centL[iatm][1]
         #print("icent= ",icent)
-        buff = "---------------"+icent[1]+"---------------" + '\n'
+        buff = "--------------- "+icent[1]+" ---------------" + '\n'
         icoord = icent[2]
         if False:
             print("icent= ",icent)
