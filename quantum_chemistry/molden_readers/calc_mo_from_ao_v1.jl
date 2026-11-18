@@ -94,7 +94,11 @@ function get_ang_mom(type)
         l = 5
     elseif type == "I"
         l = 6
+    else
+        println("***ERROR***")
+        println("***Unsupported angular meomentum: $type***")
     end
+    @assert repr == 0 || repr == 1 "Unsupported representation type"
     return l,repr
 end
 
@@ -107,17 +111,60 @@ function update_nbas(nbas,l,repr)
     if repr == 1
     # spherical harmonic basis functions
         nbas += (2*l + 1)
+        @assert nbas isa Int "nbas is not an integer! $nbas $l $repr"
     elseif repr == 0
     # Cartesian Gaussian basis functions
-        nbas += ((l+1)(l+2)) / 2
+        nbas += ((l+1)*(l+2)) / 2
+        nbas = parse(Int,nbas)
+        @assert nbas isa Int "nbas is not an integer! $nbas $l $repr"
     end
-    @assert typeof(nbas) == Int "Number of basis functions must be an integer!"
+    @assert nbas isa Int "Number of basis functions must be an integer!"
     return nbas
+end
+
+##================================================================##
+function cart_to_sphere(l)
+##================================================================##
+    """
+    Construct the cartesian -> spherical transformation matrix to deal with spherical basis molden files
+    """
+    nsph = (2*l+1)
+    ngas = ((l+1)*(l+2)) / 2
+    T_mat = zeros((nsph,ngas))
+    return T_mat
+end
+
+##================================================================##
+function get_ao_comp_and_repr(l,repr)
+##================================================================##
+    ao_comp = Tuple{Int,Int,Int}[]
+    if repr == 0
+        for lx=l:-1:0
+            for ly=(l-lx):-1:0
+                lz = l - lx - ly
+                push!(ao_comp,(lx,ly,lz))
+            end
+        end
+    end
+    #TODO implement spherical
+    if repr == 1
+        for lx=l:-1:0
+            for ly=(l-lx):-1:0
+                lz = l - lx - ly
+                push!(ao_comp,(lx,ly,lz))
+            end
+        end
+    end
+    return ao_comp
 end
 
 ##================================================================##
 function read_ebasis(infile)
 ##================================================================##
+    """
+    Reads in a molden input file (typically Terachem format) and takes the information about the atomic basis primitives
+    Also constructs the atom object which has attr atom{}
+    """
     atmlist      = []
     centcnt::Int = 0
     
@@ -221,23 +268,25 @@ function read_grid_info(infile)
         for idim=1:ndim
             line = readline(file)
             cols = split(line)
-            npt  = parse(Int,cols[1])
-            imin = parse(Float64,cols[2])
-            imax = parse(Float64,cols[3])
-            grid_inf[idim,1] = ndim
+            idim = parse(Int,cols[1])
+            npt  = parse(Int,cols[2])
+            imin = parse(Float64,cols[3])
+            imax = parse(Float64,cols[4])
+            grid_inf[idim,1] = npt
             grid_inf[idim,2] = imin
             grid_inf[idim,3] = imax
+            println(">>>Reading grid_inf | npt_imin_imax: $npt $imin $imax")
         end
     end
     return grid_inf
 end
 
 ##================================================================##
-function build_grid(grid_inf)
+function build_grid(atmlist,mo_coef,grid_inf)
 ##================================================================##
     ndim,ninf = size(grid_inf)
-    npt_l     = zeros(ndim)
-    rangemat  = zeros(ndim,2)
+    npt_l     = zeros(Int,ndim)
+    rangemat  = zeros(Float64,(ndim,2))
     for idim=1:ndim
         npt  = grid_inf[idim,1]
         imin = grid_inf[idim,2]
@@ -246,21 +295,36 @@ function build_grid(grid_inf)
         rangemat[idim,1] = imin
         rangemat[idim,2] = imax
     end
-    grid = zeros(Float64,npt,npt,npt)
-    xr   = range(rangemat[1,1],rangemat[1,2],length=npt_l[1])
-    yr   = range(rangemat[2,1],rangemat[2,2],length=npt_l[2])
-    zr   = range(rangemat[3,1],rangemat[3,2],length=npt_l[3])
+    grid = zeros(Float64,npt_l[1],npt_l[2],npt_l[3])
+    xmin = rangemat[1,1]
+    xmax = rangemat[1,2]
+    ymin = rangemat[2,1]
+    ymax = rangemat[2,2]
+    zmin = rangemat[3,1]
+    zmax = rangemat[3,2]
+    nptx = npt_l[1]
+    npty = npt_l[2]
+    nptz = npt_l[3]
+    xr   = range(xmin,xmax,length=nptx)
+    yr   = range(ymin,ymax,length=npty)
+    zr   = range(zmin,zmax,length=nptz)
+    println(">>>Grid cartesian ranges_x_npt: $xmin $xmax $nptx")
+    println(">>>Grid cartesian ranges_y_npt: $ymin $ymax $npty")
+    println(">>>Grid cartesian ranges_z_npt: $zmin $zmax $nptz")
+    println(">>>Total grid points: $(nptx*npty*nptz)")
     cnt_x = 0
-    cnt_y = 0
-    cnt_z = 0
     for x in xr
         cnt_x += 1
+        cnt_y  = 0
         for y in yr
             cnt_y += 1
+            cnt_z  = 0
             for z in zr
                 cnt_z += 1
-                ans = build_mo_at_gridpoint()
-                grid[cnt_x,cnt_y,cnt_z] = build_mo 
+                loc = [x,y,z]
+                ans = build_mo_at_gridpoint(atmlist,mo_coef,1,loc)
+                grid[cnt_x,cnt_y,cnt_z] = ans
+                println(">>>>Grid_x_y_z_mo: $x $y $z $ans")
             end # zr
         end # yr
     end # xr
@@ -268,64 +332,64 @@ function build_grid(grid_inf)
 end
 
 ##================================================================##
-function construct_basis_funcs()
+function build_mo_at_gridpoint(atmlist,mo_coef,imo,loc)
 ##================================================================##
-    infile_ebas  = "./ebasis.inp"
-    infile_mo    = "./mo_to_ao.inp"
-    infile_grid  = "./grid_maker_info.inp"
-    atmlist  = read_ebasis(infile_ebas)
-    mo_mat   = read_mo_coef(infile_mo)
-    grid_inf = read_grid_info(infile_grid)
-    #grid     = build_grid(grid_inf)
-    grid     = zeros(Float64,npt,npt,npt)
-    natm     = length(atmlist)
-    ndim,inf = size(grid_inf)
+    """
+    Calculates the molecular orbitals by contraction of gaussian primitives for each atom in atmlist
+    """
+    natm   = length(atmlist)
+    mo_val = 0.0e0
+    x,y,z  = loc
+
+    iao::Int = 0 # track atomic orbital counts while constructing mos
     for iatm=1:natm
-        atom   = atmlist[iatm]
-        typ    = atom.type_m
-        cent   = atom.cent_m
-        shells = atom.shells_m
-        nshell = length(shells)
+        atm     = atmlist[iatm]
+        cent    = atm.center_m
+        shells  = atm.shells_m
+        nshell  = length(shells)
         for ishell=1:nshell
             shell   = shells[ishell]
             ang_mom = shell.ang_mom_m
             repr    = shell.repr_m
+
             alpvec  = shell.alpvec_m
             coefvec = shell.coefvec_m
-            nprim   = length(alpvec)
-            for iprim=1:nprim
-                alp  = alpvec[iprim]
-                coef = coefvec[iprim]
-                for idim=1:ndim
-                    npt = grid_inf[idim,1]
-                    min = grid_inf[idim,2]
-                    max = grid_inf[idim,3]
-                    loc = cent[idim]
-                    cnt_x = 0
-                    cnt_y = 0
-                    cnt_z = 0
-                    for x in range(min,max,length=npt)
-                        cnt_x += 1
-                        for y in range(min,max,length=npt)
-                            cnt_y += 1
-                            for z in range(min,max,length=npt)
-                                cnt_z += 1
-                                gaus = coef * exp(-alp * (x - loc)^2)
-                            end # z
-                        end # y
-                    end # x
-                end # ndim
-            end # prim
-        end # shell
-    end # atom
-    return nothing
+            # Determine spherical/cartesian representation
+            # Then determine ao components
+            ao_comps = get_ao_comp_and_repr(ang_mom,repr)
+            for (l,m,n) in ao_comps
+                iao   += 1
+                ao_val = 0.0e0
+                dx     = x - cent[1]
+                dy     = y - cent[2]
+                dz     = z - cent[3]
+                r2     = dx^2 + dy^2 + dz^2
+                #Do the contraction of primitives
+                nprim  = length(alpvec)
+                for iprim=1:nprim
+                    alp    = alpvec[iprim]
+                    coef   = coefvec[iprim]
+                    gauss  = dx^l * dy^m * dz^n *exp(-alp*r2)
+                    ao_val = coef * gauss
+                end #nprim
+                #Append contracted aos to mo matrix
+                mo_val += mo_coef[iao,imo] * ao_val
+            end #ao_comps
+        end #nshell
+    end #natm
+    @assert iao == size(mo_coef,1) "ao count doesn't match mo matrix! iao= $iao mo_coef[:,1]= $(mo_coef[:,1])"
+    return mo_val
 end
 
 ##================================================================##
 function test1A()
 ##================================================================##
-    ebasis_infile = "./ebasis.inp"
-    atmlist = read_ebasis(ebasis_infile)
+    infile_ebasis = "./ebasis.inp"
+    infile_grid   = "./grid_maker_info.inp"
+    infile_mo     = "./mo_to_ao.inp"
+    grid_inf      = read_grid_info(infile_grid)
+    atmlist       = read_ebasis(infile_ebasis)
+    mo_mat        = read_mo_coef(infile_mo)
     # test to check ebasis reader
     natm = length(atmlist)
     nbas = 0
@@ -363,6 +427,7 @@ function test1A()
     println(">===============================================<")
     println(">Total number of basis functions: $nbas")
     println(">Total number of Gaussians to construct: $ngas")
+    build_grid(atmlist,mo_mat,grid_inf) 
     return nothing
 end
 
